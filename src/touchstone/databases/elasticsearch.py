@@ -2,6 +2,7 @@ import logging
 import elasticsearch
 import json
 import ssl
+import urllib3
 from elasticsearch_dsl import Search, A
 
 
@@ -9,6 +10,7 @@ from . import DatabaseBaseClass
 
 
 logger = logging.getLogger("touchstone")
+urllib3.disable_warnings()
 
 
 class Elasticsearch(DatabaseBaseClass):
@@ -17,8 +19,9 @@ class Elasticsearch(DatabaseBaseClass):
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
-        es = elasticsearch.Elasticsearch([self._conn_url], send_get_body_as='POST',
-                                         ssl_context=ssl_ctx, use_ssl=True)
+        es = elasticsearch.Elasticsearch(
+            [self._conn_url], send_get_body_as="POST", ssl_context=ssl_ctx, use_ssl=True
+        )
         return es
 
     def __init__(self, conn_url=None):
@@ -69,8 +72,7 @@ class Elasticsearch(DatabaseBaseClass):
         output_dict = {}
         if "aggregations" not in compute_map:
             logger.critical(
-                f"Incorrect JSON data: nested dictionaries aggregations \
-fields are required in {compute_map}"
+                f"Incorrect JSON data: nested dictionaries aggregations fields are required in {compute_map}"
             )
             return output_dict
         buckets = compute_map.get("buckets", [])

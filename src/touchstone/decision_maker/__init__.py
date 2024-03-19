@@ -10,6 +10,10 @@ logger = logging.getLogger("touchstone")
 
 
 class Compare:
+
+    comparisons = 0
+    fails = 0
+
     def __init__(self, baseline_uuid, json_data):
         self.json_data = json_data
         self.baseline_uuid = baseline_uuid
@@ -18,23 +22,36 @@ class Compare:
         self.compare_dict = {}
 
     def _compare(self, input_dict, compare_dict):
+        self.comparisons += 1
         if self.baseline_uuid not in input_dict:
             logger.error(f"Missing UUID in input dict: {input_dict}")
             return
         # baseline value is the current value plus the tolerancy
         base_val = input_dict[self.baseline_uuid] + input_dict[self.baseline_uuid] * self.tolerancy / 100
         for u, v in input_dict.items():
+            # skip input_dict values that are part of the baseline uuid (no comparison to self)
             if u == self.baseline_uuid:
                 continue
-            metric_percent = v * 100 / input_dict[self.baseline_uuid]
-            # If percentage is greater than 100, sustract 100 from it else substract it from 100
-            deviation = metric_percent - 100 if metric_percent > 100 else 100 - metric_percent
-            deviation = -deviation if v < input_dict[self.baseline_uuid] else deviation
-            if (self.tolerancy >= 0 and v > base_val) or (self.tolerancy < 0 and v < base_val):
-                result = "Fail"
-                self.passed = False
-            else:
-                result = "Pass"
+            try:
+                metric_percent = v * 100 / input_dict[self.baseline_uuid]
+            except ZeroDivisionError:
+                # both values are 0
+                if (v == 0) and (input_dict[self.baseline_uuid] == 0):
+                    metric_percent = 100
+                # just baseline value is 0
+                else:
+                    metric_percent = 0
+            finally:
+                # If percentage is greater than 100, sustract 100 from it else substract it from 100
+                deviation = metric_percent - 100 if metric_percent > 100 else 100 - metric_percent
+                deviation = -deviation if v < input_dict[self.baseline_uuid] else deviation
+                print(f"deviation is {deviation}")
+                if (self.tolerancy >= 0 and v > base_val) or (self.tolerancy < 0 and v < base_val):
+                    result = "Fail"
+                    self.passed = False
+                    self.fails += 1
+                else:
+                    result = "Pass"
             if result not in compare_dict:
                 compare_dict[result] = {}
             compare_dict[result] = {
@@ -65,9 +82,7 @@ class Compare:
                         recurse(data[k], json_path[1::], parent[k])
                 else:
                     if json_path[0] not in data:
-                        logger.error(
-                            f"Key {json_path[0]} key not found in current dict level: {list(data.keys())}"
-                        )
+                        self.passed = None
                         return
                     parent[json_path[0]] = {}
                     recurse(data[json_path[0]], json_path[1::], parent[json_path[0]])
@@ -89,15 +104,18 @@ def run(baseline_uuid, results_data, compute_header, output_file, args):
     :param compute_header headers to use in CSV and tabulate outputs
     :param args benchmark-comparison arguments
     """
+    rc = 0
     passed = True
     try:
         args.tolerancy_rules.seek(0)
         json_paths = yaml.load(args.tolerancy_rules, Loader=yaml.FullLoader)
     except Exception as err:
         logger.error(f"Error loading tolerations rules: {err}")
-    c = Compare(baseline_uuid, results_data)
     for json_path in json_paths:
+        c = Compare(baseline_uuid, results_data)
         passed = c.compare(json_path["json_path"], json_path["tolerancy"])
+        if passed is None:
+            continue
         if args.output == "yaml":
             print(yaml.dump({"tolerations": c.compare_dict}, indent=1), file=output_file)
         elif args.output == "json":
@@ -111,4 +129,6 @@ def run(baseline_uuid, results_data, compute_header, output_file, args):
             row_list = []
             flatten_and_discard(c.compare_dict, compute_header, row_list)
             print(tabulate(row_list, headers=compute_header, tablefmt="pretty"), file=output_file)
-    return 0 if passed else args.rc
+        if not passed and c.fails * 100 / c.comparisons > json_path.get("max_failures", 0):
+            rc = args.rc
+    return rc
